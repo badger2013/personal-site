@@ -1,0 +1,58 @@
+<html>
+
+<body style="background-color: black; color: white">
+
+    <style>
+        .mobile-button {
+            display: inline-block;
+            padding: 14px 24px;
+            /* Large tap area */
+            font-size: 18px;
+            /* Readable text size */
+            font-weight: 600;
+            color: #fff;
+            background: linear-gradient(135deg, #4CAF50, #2E7D32);
+            border: none;
+            border-radius: 12px;
+            /* Rounded corners */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            width: 100%;
+            /* Full width on mobile */
+            max-width: 320px;
+            /* Prevent overly wide buttons */
+            text-align: center;
+        }
+
+        .mobile-button:active {
+            transform: scale(0.96);
+            /* Tap feedback */
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .mobile-button:focus {
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.5);
+        }
+    </style>
+
+
+    <script src="js/randomize-names.js">
+
+    </script>
+    <textarea id="name-list" name="name-list" rows="20" cols="50">
+
+</textarea>
+
+    <br /><br /><button class="mobile-button" id="name-generate"
+        onclick="generateExchangeList(document.getElementById('name-list').value)">Generate</button>
+    <br />
+    <div id="name-output">
+
+    </div>
+
+</body>
+
+
+</html>
