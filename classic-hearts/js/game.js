@@ -437,7 +437,7 @@ Hearts.Game = {
         let cId = HeartsHelpers.getPlayerToPassTo(HeartsConstants.humanPlayer);
 
         for (let removedCard of removedCards) {
-            this.players[cId].addCard(removedCard);
+            this.players[cId].addCard(removedCard, true);
         }
 
         // Now, pass cards for each AI player

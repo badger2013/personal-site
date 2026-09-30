@@ -5,276 +5,351 @@
 // Source: https://bitbucket.org/jpickart/classic-hearts/src
 
 Hearts.AI = {
+    moonShootingEnabled: false,
+    moonShootingThreshold: 0.9,
+
+    logDecision: function (decision, details) {
+        if (typeof console !== "undefined" && console.info) {
+            console.info("[Hearts.AI] " + decision, details);
+        }
+    },
+
     /**
-     * Picks a move for the AI to make.
+     * Picks a legal move that minimizes estimated penalty points.
      * @param {Player} player the AI player
      * @returns {string} the move to make, expressed as a string (e.g., "7D")
      */
     pickMove: function (player) {
         var playableCards = Hearts.Rules.getPlayableCards(player);
+        if (!playableCards.length) {
+            return null;
+        }
 
-        // Get the cards in the game that have not been played yet
-        // Note: This excludes the cards of the current player
-        // For example:
-        // Turn: 2
-        // Current player = C3
-        // C2 remaining cards = 11
-        // C3 remaining cards = 12
-        // H remaining cards = 12
-        // C4 remaining cards = 12
-        // Remaining cards = 11 + 12 + 12 = 35
+        var turn = Hearts.Game.round.turn;
+        var playedCards = turn.copyPlayedCards();
+        var turnSuit = turn.getTurnSuit();
+        var remainingPlayers = turn.getRemainingPlayers();
         var remainingCards = Hearts.Game.getRemainingCards(player.id);
+        var existingPoints = turn.getTurnPoints();
+        var remainingPoints = remainingCards.reduce(function (total, card) {
+            return total + card.points;
+        }, 0);
+        var bestCard = playableCards[0];
+        var bestScore = Infinity;
+        var candidateScores = [];
 
-        // Guess the hand of each player by assigning these cards
-        // Based on the AI's knowledge of what they've played
-        // Store this is in a dictionary where the key is the player ID
-        // And the value is an array of Card objects
-        var hands = {};
-        var suits = {};
-
-        // First, pass out the cards to players which this player is sure has them
-        for (var key in player.knowledge.players) {
-            if (key !== player.id) {
-                if (!hands[key]) {
-                    hands[key] = [];
+        for (var i = 0; i < playableCards.length; i++) {
+            var card = playableCards[i];
+            var leadSuit = turnSuit || card.suit;
+            var winningCard = Hearts.Rules.getWinningCard(playedCards.concat([card]), leadSuit);
+            var winsSoFar = winningCard.id === card.id;
+            var higherCards = remainingCards.filter(function (otherCard) {
+                if (otherCard.suit !== leadSuit || otherCard.getValue() <= winningCard.getValue()) {
+                    return false;
                 }
-                for (var i = 0; i < player.knowledge.players[key].cards.length; i++) {
-                    for (var j = 0; j < remainingCards.length; j++) {
-                        if (remainingCards[j].id === player.knowledge.players[key].cards[i].id) {
-                            hands[key].push(remainingCards.splice(j, 1)[0]);
-                        }
-                    }
-                }
-                for (var suit in player.knowledge.players[key].suits) {
-                    if (!suits[suit]) {
-                        suits[suit] = [];
-                    }
-                    // Keep track of the players who do have a particular suit
-                    if (player.knowledge.players[key].suits[suit] < 1) {
-                        suits[suit].push(key);
-                    }
-                }
-            }
-        }
 
-        // For each suit, deal cards to the players that have the suit
-        for (var suit in suits) {
-            var j = 0;
-            var i = 0;
+                return remainingPlayers.some(function (opponentId) {
+                    var knowledge = player.knowledge && player.knowledge.players[opponentId];
+                    return !knowledge || !knowledge.suits || knowledge.suits[leadSuit] !== 1;
+                });
+            }).length;
+            var winProbability = 0;
 
-            while (i < remainingCards.length) {
-                if (remainingCards[i].suit === suit) {
-                    hands[suits[suit][j]].push(remainingCards.splice(i, 1)[0]);
-                    j++;
-
-                    if (j > suits[suit].length - 1) {
-                        j = 0;
-                    }
+            if (winsSoFar) {
+                if (!remainingPlayers.length) {
+                    winProbability = 1;
                 }
                 else {
-                    i++;
-                }
-            }
-        }
-
-        // Winnow down the cards in each guessed hand based on what's playable for the current turn
-        if (Hearts.Game.round.turn.started) {
-            // Get the players that have already played this turn so that they can be skipped
-            // When guessing what cards will be played
-            var skipPlayers = Hearts.Game.round.turn.getPlayers();
-
-            for (var key in hands) {
-                if (skipPlayers.indexOf(key) === -1) {
-                    var mockPlayer = new Player(
-                        key,
-                        Hearts.Game.players[key].ai,
-                        hands[key],
-                        Hearts.Game.players[key].wonCards,
-                        Hearts.Game.players[key].wonTricks,
-                        Hearts.Game.players[key].knowledge
-                    );
-
-                    hands[key] = Hearts.Rules.getPlayableCards(mockPlayer);
-                }
-                else {
-                    delete hands[key];
+                    var chanceHigherCard = Math.min(1, higherCards / Math.max(1, remainingCards.length));
+                    winProbability = Math.pow(1 - chanceHigherCard, remainingPlayers.length * 1.5);
                 }
             }
 
-            var remainingPlayableCards = [];
-            var remainingPlayers = Hearts.Game.round.turn.getRemainingPlayers();
+            var pointsInLeadSuit = remainingCards.filter(function (otherCard) {
+                return otherCard.suit === leadSuit;
+            }).reduce(function (total, otherCard) {
+                return total + otherCard.points;
+            }, 0);
+            var potentialSuitPoints = pointsInLeadSuit * Math.min(1, remainingPlayers.length / 3);
+            var expectedDiscardPoints = Math.max(0, remainingPoints - pointsInLeadSuit) *
+                remainingPlayers.length / Math.max(1, remainingCards.length);
+            var trickPoints = existingPoints + card.points + potentialSuitPoints;
+            var expectedPenalty = (trickPoints + expectedDiscardPoints) * winProbability;
+            var rank = card.getValue();
+            var openingAdjustment = 0;
+            var discardAdjustment = 0;
 
-            for (var i = 0; i < remainingPlayers.length; i++) {
-                for (var key in hands) {
-                    if (key === remainingPlayers[i]) {
-                        remainingPlayableCards.push(hands[key]);
-                        break;
-                    }
+            if (!playedCards.length) {
+                var suitLength = player.cards.filter(function (heldCard) {
+                    return heldCard.suit === card.suit;
+                }).length;
+                openingAdjustment = rank * 0.025 - suitLength * 0.12;
+                expectedPenalty += openingAdjustment;
+
+                if (card.suit === HeartsConstants.spade && card.rank === HeartsConstants.queen) {
+                    var queenRisk = remainingCards.some(function (otherCard) {
+                        return otherCard.suit === HeartsConstants.spade &&
+                            (otherCard.rank === HeartsConstants.king || otherCard.rank === HeartsConstants.ace);
+                    });
+                    openingAdjustment += queenRisk ? 20 : 0;
+                    expectedPenalty += queenRisk ? 20 : 0;
                 }
-
-                delete hands[remainingPlayers[i]];
+            }
+            else if (existingPoints > 0 && !winsSoFar) {
+                expectedPenalty -= rank * 0.01;
+            }
+            else {
+                expectedPenalty += rank * 0.002;
             }
 
-            var turnSuit = Hearts.Game.round.turn.getTurnSuit();
-            var playedCards = Hearts.Game.round.turn.copyPlayedCards();
-            playedCards.push(playableCards[0]);
-            // An array of objects
-            // The key for the object is a card ID
-            // The value is the worst outcome for playing that card
-            var outcomes = [];
-
-            if (remainingPlayableCards.length === 0) {
-                remainingPlayableCards.push([""]);
+            if (turnSuit && card.suit !== turnSuit) {
+                discardAdjustment = -Hearts.AI.getDiscardRisk(card) * 0.02;
+                expectedPenalty += discardAdjustment;
             }
 
-            // Cycle through each playable card for the AI player trying to make a decision
-            for (var i = 0; i < playableCards.length; i++) {
-                var worstOutcome = null;
-
-                for (var j = 0; j < remainingPlayableCards.length; j++) {
-                    for (var l = 0; l < remainingPlayableCards[j].length; l++) {
-                        if (remainingPlayableCards[j][l]) {
-                            playedCards.push(remainingPlayableCards[j][l]);
-                        }
-
-                        var winningCard = Hearts.Rules.getWinningCard(playedCards, turnSuit);
-                        var playedCardsString = "";
-                        var points = 0;
-
-                        for (var k = 0; k < playedCards.length; k++) {
-                            points += playedCards[k].points;
-                            playedCardsString += playedCards[k].id + ", ";
-                        }
-
-                        // For debugging
-                        playedCardsString = playedCardsString.substring(0, playedCardsString.length - 2);
-
-                        if (points !== 0 && winningCard.id === playableCards[i].id) {
-                            points *= -1;
-                        }
-
-                        if (!worstOutcome || worstOutcome[Object.keys(worstOutcome)[0]].points < points) {
-                            worstOutcome = {
-                                [playableCards[i].id]: {
-                                    points: points,
-                                    playedCards: playedCardsString
-                                }
-                            };
-                        }
-                        playedCards = Hearts.Game.round.turn.copyPlayedCards();
-                        playedCards.push(playableCards[i]);
-                    }
-                }
-
-                outcomes.push(worstOutcome);
-            }
-
-            // Sort the outcomes
-            outcomes.sort(function (a, b) {
-                if (!a || !b) {
-                    return 0;
-                }
-                if (!a[0] || !b[0]) {
-                    return 0;
-                }
-                let objA = a[Object.keys(a)[0]];
-                let objB = b[Object.keys(b)[0]];
-
-                if (objA.points > objB.points) {
-                    return -1;
-                }
-                if (objA.points < objB.points) {
-                    return 1;
-                }
-
-                return 0;
+            candidateScores.push({
+                card: card.id,
+                estimatedPenalty: Number(expectedPenalty.toFixed(3)),
+                winProbability: Number(winProbability.toFixed(3)),
+                winsSoFar: winsSoFar,
+                trickPoints: trickPoints,
+                potentialSuitPoints: Number(potentialSuitPoints.toFixed(3)),
+                openingAdjustment: Number(openingAdjustment.toFixed(3)),
+                discardAdjustment: Number(discardAdjustment.toFixed(3))
             });
 
-            if (outcomes[0]) {
-                var card = Object.keys(outcomes[0])[0];
-
-                if (card) {
-                    return card;
-                }
+            if (expectedPenalty < bestScore) {
+                bestScore = expectedPenalty;
+                bestCard = card;
             }
         }
 
-        return playableCards[0].id;
+        Hearts.AI.logDecision("move selected", {
+            player: player.id,
+            trick: playedCards.map(function (card) { return card.id; }),
+            candidates: candidateScores,
+            selected: bestCard.id,
+            reason: "lowest estimated penalty score"
+        });
+
+        return bestCard.id;
+    },
+
+    getCardRank: function (card) {
+        return card.getValue();
+    },
+
+    getPassRisk: function (card, suitCounts, recipientKnowledge) {
+        var rank = Hearts.AI.getCardRank(card);
+        var risk = rank * 2;
+
+        if (card.suit === HeartsConstants.spade && card.rank === HeartsConstants.queen) {
+            risk += 1000;
+        }
+        else if (card.suit === HeartsConstants.spade && card.rank === HeartsConstants.ace) {
+            risk += 500;
+        }
+        else if (card.suit === HeartsConstants.spade && card.rank === HeartsConstants.king) {
+            risk += 400;
+        }
+        else if (card.suit === HeartsConstants.heart && card.rank === HeartsConstants.ace) {
+            risk += 350;
+        }
+        else if (card.suit === HeartsConstants.heart && card.rank === HeartsConstants.king) {
+            risk += 300;
+        }
+        else if (card.suit === HeartsConstants.heart && rank >= 11) {
+            risk += 250;
+        }
+        else if (card.points) {
+            risk += 80;
+        }
+
+        if (suitCounts[card.suit] <= 3) {
+            risk += Math.max(0, 12 - suitCounts[card.suit] * 3);
+        }
+        if (recipientKnowledge && recipientKnowledge.suits && recipientKnowledge.suits[card.suit] === 0) {
+            risk += rank;
+        }
+
+        return risk;
+    },
+
+    getDiscardRisk: function (card) {
+        var rank = Hearts.AI.getCardRank(card);
+
+        if (card.suit === HeartsConstants.spade && card.rank === HeartsConstants.queen) {
+            return 1000;
+        }
+        if (card.suit === HeartsConstants.spade && card.rank === HeartsConstants.ace) {
+            return 100;
+        }
+        if (card.suit === HeartsConstants.spade && card.rank === HeartsConstants.king) {
+            return 80;
+        }
+        if (card.suit === HeartsConstants.heart && rank >= 11) {
+            return 60 + rank;
+        }
+        if (rank >= 11) {
+            return rank * 3;
+        }
+
+        return rank;
     },
 
     /**
-     * Determine if there is the possibility of shorting a suit.
-     * "Shorting a suit" means that passing cards gives a player 0 or 1
-     * card remaining of that suit.
+     * Returns the best suit to shorten, or null when shortening is not worthwhile.
+     * Suits of four or more cards are never candidates.
      */
     shouldShortSuit: function (player) {
-        var suitCount = {};
+        var suits = [HeartsConstants.club, HeartsConstants.diamond, HeartsConstants.spade, HeartsConstants.heart];
+        var cards = player.cards.filter(function (card) {
+            return !card.passed;
+        });
+        var suitCounts = {};
 
-        // Loop through the player's cards and get a count of all cards by suit    
-        for (var i = 0; i < player.cards.length; i++) {
-            if (suitCount[player.cards[i].suit]) {
-                suitCount[player.cards[i].suit]++;
-            }
-            else {
-                suitCount[player.cards[i].suit] = 1;
+        suits.forEach(function (suit) {
+            suitCounts[suit] = 0;
+        });
+        cards.forEach(function (card) {
+            suitCounts[card.suit]++;
+        });
+
+        var dangerousCards = cards.filter(function (card) {
+            return card.points > 0 || (card.suit === HeartsConstants.spade && card.getValue() >= 12) ||
+                (card.suit === HeartsConstants.heart && card.getValue() >= 12);
+        }).length;
+        var suitAnalysis = suits.filter(function (suit) {
+            return suitCounts[suit] >= 1 && suitCounts[suit] <= 3;
+        }).map(function (suit) {
+            var suitCards = cards.filter(function (card) {
+                return card.suit === suit;
+            });
+            var risk = suitCards.reduce(function (total, card) {
+                return total + Hearts.AI.getPassRisk(card, suitCounts);
+            }, 0);
+            var containsDanger = suitCards.some(function (card) {
+                return card.points > 0 || card.getValue() >= 11;
+            });
+            var remainingSuits = suits.filter(function (otherSuit) {
+                return otherSuit !== suit && suitCounts[otherSuit] > 0;
+            }).length;
+
+            return { suit: suit, count: suitCounts[suit], risk: risk, containsDanger: containsDanger, remainingSuits: remainingSuits };
+        });
+        var candidates = suitAnalysis.filter(function (candidate) {
+            return candidate.containsDanger && dangerousCards > 0 && candidate.remainingSuits >= 2;
+        });
+
+        candidates.sort(function (a, b) {
+            return a.count - b.count || b.risk - a.risk;
+        });
+
+        var selectedSuit = candidates.length ? candidates[0].suit : null;
+        Hearts.AI.logDecision("short-suit analysis", {
+            player: player.id,
+            dangerousCards: dangerousCards,
+            candidates: suitAnalysis,
+            selectedSuit: selectedSuit,
+            reason: selectedSuit ? "shortest eligible suit with dangerous cards" : "no suit met the short-suit criteria"
+        });
+
+        return selectedSuit;
+    },
+
+    getPassCards: function (player, recipientId) {
+        var cards = player.cards.filter(function (card) {
+            return !card.passed;
+        });
+        var suitCounts = {};
+        cards.forEach(function (card) {
+            suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
+        });
+
+        var recipientKnowledge = player.knowledge && player.knowledge.players[recipientId];
+        var targetSuit = Hearts.AI.shouldShortSuit(player);
+        var sorted = cards.slice().sort(function (a, b) {
+            return Hearts.AI.getPassRisk(b, suitCounts, recipientKnowledge) -
+                Hearts.AI.getPassRisk(a, suitCounts, recipientKnowledge);
+        });
+        var selected = targetSuit ? sorted.filter(function (card) {
+            return card.suit === targetSuit;
+        }) : [];
+
+        for (var i = 0; i < sorted.length && selected.length < 3; i++) {
+            if (selected.indexOf(sorted[i]) === -1) {
+                selected.push(sorted[i]);
             }
         }
 
-        var lowSuit = null;
-        var lowSuitCount = null;
+        selected = selected.slice(0, 3);
+        Hearts.AI.logDecision("pass cards selected", {
+            player: player.id,
+            recipient: recipientId || null,
+            targetSuit: targetSuit,
+            selected: selected.map(function (card) {
+                return {
+                    card: card.id,
+                    risk: Hearts.AI.getPassRisk(card, suitCounts, recipientKnowledge)
+                };
+            }),
+            reason: targetSuit ? "shorten target suit, then shed highest-risk cards" : "shed highest-risk cards"
+        });
 
-        // Find the lowest suit count
-        for (var suit in suitCount) {
-            if (lowSuitCount === null || suitCount[suit] < lowSuitCount) {
-                lowSuit = suit;
-                lowSuitCount = suitCount[suit];
-            }
-        }
+        return selected;
+    },
 
-        return lowSuitCount <= 4 ? lowSuit : null;
+    shouldPursueMoonShot: function (estimatedSuccessProbability) {
+        var shouldPursue = Hearts.AI.moonShootingEnabled &&
+            estimatedSuccessProbability >= Hearts.AI.moonShootingThreshold;
+        Hearts.AI.logDecision("moon-shot evaluation", {
+            enabled: Hearts.AI.moonShootingEnabled,
+            estimatedSuccessProbability: estimatedSuccessProbability,
+            threshold: Hearts.AI.moonShootingThreshold,
+            selected: shouldPursue,
+            reason: shouldPursue ? "enabled and above threshold" : "disabled or below threshold"
+        });
+        return shouldPursue;
     },
 
     /**
      * Passes cards for all AI players in the game.
      */
     passCards: function (players) {
-        var numCardsToPass = 3;
+        if (Hearts.Game.currentPassTo === HeartsConstants.passStay) {
+            Hearts.AI.logDecision("passing skipped", { reason: "current hand has no pass" });
+            return;
+        }
 
+        var selections = {};
+        var recipients = {};
         for (var key in players) {
             if (players[key].ai) {
-                var removedCards = [];
-
-                // There are two possible strategies the AI player will use
-                // 1) short a suit
-                // 2) pass high value cards
-                var lowSuit = Hearts.AI.shouldShortSuit(players[key]);
-
-                if (lowSuit) {
-                    for (var j = 0; j < numCardsToPass; j++) {
-                        var tempCard = players[key].getNextCardBySuit(lowSuit);
-
-                        removedCards.push(tempCard || players[key].getNextCardByValue());
-                    }
-                }
-                else {
-                    for (var j = 0; j < numCardsToPass; j++) {
-                        removedCards.push(players[key].getNextCardByValue());
-                    }
-                }
-
-                var cId = HeartsHelpers.getPlayerToPassTo(key);
-
-                // Remember that these cards are being passed
-                players[key].updateCardKnowledge(removedCards, cId);
-
-                for (var removedCard of removedCards) {
-                    players[cId].addCard(removedCard, true);
-
-                    if (!players[cId].ai) {
-                        removedCard.mark(HeartsConstants.markPass);
-                    }
-                }
+                recipients[key] = HeartsHelpers.getPlayerToPassTo(key);
+                selections[key] = Hearts.AI.getPassCards(players[key], recipients[key]);
             }
+        }
+
+        for (var key in selections) {
+            var player = players[key];
+            var removedCards = selections[key].map(function (card) {
+                return player.removeCard(card.id);
+            }).filter(Boolean);
+            var recipientId = recipients[key];
+
+            player.updateCardKnowledge(removedCards, recipientId);
+            Hearts.AI.logDecision("cards passed", {
+                player: key,
+                recipient: recipientId,
+                cards: removedCards.map(function (card) { return card.id; })
+            });
+            removedCards.forEach(function (card) {
+                players[recipientId].addCard(card, true);
+
+                if (!players[recipientId].ai) {
+                    card.mark(HeartsConstants.markPass);
+                }
+            });
         }
     }
 };
